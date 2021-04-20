@@ -5,7 +5,9 @@ from numba import njit
 import time
 from functools import cache
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
+import tqdm
+import os
 
 # COLORS
 WHITE = (255, 255, 255)
@@ -48,6 +50,11 @@ def isFunction(f):
     if type(f) in (type(_), type(len)):
         return True
     return False
+
+
+def pilImageToSurface(pilImage: Image):
+    return pg.image.fromstring(
+        pilImage.tobytes(), pilImage.size, pilImage.mode).convert()
 
 
 def tam(x):
@@ -117,16 +124,50 @@ def drawAreaFunc(func, color=WHITE, surface=display):
 
 
 def drawAreaFuncImg(func, color=WHITE, surface=display):
-    img = np.zeros((*size, 3))
+    img = Image.new("RGB", size)
+    imgDraw = ImageDraw.Draw(img)
     for x in range(size[0]):
         for y in range(size[1]):
             fx, fy = func(x, y)
-            img[fx][fy] = np.array(color(tam(x), tamY(y))).astype(np.uint8) if isFunction(color) else color
+            # img[fx][fy] = np.array(
+            #     color(tam(x), tamY(y))).astype(np.uint8
+            # ) if isFunction(color) else color
+            imgDraw.point(
+                (fx, fy),
+                color(tam(x), tamY(y)) if isFunction(color) else color
+            )
     # print(dir(img))
-    img = Image.fromarray(img, "RGB")
+    # img = Image.fromarray(img, "RGB")
     # print(dir(img))
+    img.save("test.png")
     imgString = img.tobytes()
     surface.blit(pg.image.frombuffer(imgString, size, "RGB"), (0, 0))
+
+
+def drawMandelBrot(mandelBrotFunc, surface=display):
+    img = pilImageToSurface(getMandelBrotImage(mandelBrotFunc))
+
+    surface.blit(img, img.get_rect(center=(250, 250)))
+
+
+def getMandelBrotImage(mandelBrotFunc):
+    img = Image.new("RGB", size, "black")
+    imgDraw = ImageDraw.Draw(img)
+    # seeX, seeY = visibleCoords()
+    # seeX = (floor(seeX[0]), ceil(seeX[1]))
+    # seeY = (floor(seeY[0]), ceil(seeY[1]))
+    # print(seeX, seeY)
+    for x in range(size[0]):
+        for y in range(size[1]):
+            imgDraw.point(
+                (tam(x), tamY(y)),
+                fill=hsvToRgb(
+                    mandelBrotFunc(tam(x), tamY(y)) * 5 % 360,
+                    100,
+                    100
+                )
+            )
+    return img
 
 
 def drawAxis(color=WHITE, surface=display):
@@ -176,9 +217,48 @@ def get_iter(c: complex, thresh: int = 4, max_steps: int = 25):
     return i
 
 
+def saveMandelbrot(xy, size, zoom, overwrite=False):
+    x, y = xy
+    if not os.path.exists(
+        f"renderedSets/{x}_{y}_{'x'.join(str(i) for i in size)}_{zoom}_set.png"
+    ) or overwrite:
+        res = 1.1**zoom
+        img = Image.new("RGB", size)
+        imgDraw = ImageDraw.Draw(img)
+        for xr in tqdm.trange(floor(x-size[0]/2), ceil(x+size[0]/2)):
+            for yr in tqdm.trange(floor(y-size[1]/2), floor(y+size[1]/2)):
+                fx = tam(xr, size=size, scale=res)
+                fy = tam(yr, size=size, scale=res)
+                # img[fx][fy] = np.array(
+                #     color(tam(x), tamY(y))).astype(np.uint8
+                # ) if isFunction(color) else color
+                # print(xr, yr, xr-x, yr-y, fx, fy)
+                imgDraw.point(
+                    (xr-x+size[0]/2, yr-y+size[1]/2),
+                    hsvToRgb(mandelbrot0(fx, fy)*5 % 360, 100, 100)
+                )
+        # print(dir(img))
+        # img = Image.fromarray(img, "RGB")
+        # print(dir(img))
+        img.save(
+            "renderedSets/"
+            f"{x}_{y}_{'x'.join(str(i) for i in size)}_{zoom}_set.png"
+        )
+        print(res)
+        print(
+            tam(floor(x-size[0]/2), size=size, scale=res),
+            tam(ceil(x+size[0]/2), size=size, scale=res)
+        )
+        print(
+            tam(floor(y-size[1]/2), size=size, scale=res),
+            tam(ceil(y+size[1]/2), size=size, scale=res)
+        )
+        # imgString = img.tobytes()
+
+
 @cache
 @njit
-def mandelbrot(x, y):
+def mandelbrot0(x, y):
     c0 = complex(x, y)
     c = 0
     for i in range(1, 1000):
@@ -212,49 +292,75 @@ def myFractal(a, b):
     return a+b
 
 
-running = True
+@njit
+def mandelbrot1(x, y):
+    z = complex(x, y)
+    c = z
+    for n in range(1000):
+        if z.real * z.real + z.imag * z.imag > 4.0:
+            return n
+        z = z*z + c
+    return 0
 
-mouse = Mouse()
-while running:
-    display.fill(BLACK)
-    for u in pg.event.get():
-        if u.type == pg.QUIT:
-            running = False
-        elif u.type == pg.VIDEORESIZE:
-            size = (u.w, u.h)
-            display = pg.display.set_mode(size, pg.RESIZABLE)
-        elif u.type == pg.MOUSEBUTTONDOWN:
-            # mouse.startPos = pg.mouse.get_pos()
-            pg.mouse.get_rel()
-            mouse.draging = True
-        elif u.type == pg.MOUSEBUTTONUP:
-            mouse.draging = False
-        elif u.type == 1027:
-            zoom -= posNegZer(u.y)
-            if scale < 300:
-                scale = 1.1**zoom
-            else:
-                scale -= u.y/10
-            if scale == 0:
-                scale = 0.1
-            scale = float("%.3g" % scale)
-            # print(scale, zoom)
-            # print(u, dir(u))
 
-    if mouse.draging:
-        mouseMov = pg.mouse.get_rel()
-        position = tuple(position[i]-mouseMov[i] for i in range(2))
-        # print(position, visibleCoords())
+if __name__ == "__main__":
+    oldState = None  # (position, RES, scale, zoom, size)
 
-    startTime = time.time()
+    running = True
 
-    drawAreaFuncImg(lambda x, y: (x, y), lambda x, y: hsvToRgb(mandelbrot(x, y)*5 % 360, 100, 100))
-    drawFunc(lambda x: 1.1**x, lambda x: hsvToRgb(x*10 % 360, 100, 100))
-    drawAxis()
+    mouse = Mouse()
+    while running:
+        for u in pg.event.get():
+            if u.type == pg.QUIT:
+                running = False
+            elif u.type == pg.VIDEORESIZE:
+                size = (u.w, u.h)
+                display = pg.display.set_mode(size, pg.RESIZABLE)
+            elif u.type == pg.MOUSEBUTTONDOWN:
+                # mouse.startPos = pg.mouse.get_pos()
+                pg.mouse.get_rel()
+                mouse.draging = True
+            elif u.type == pg.MOUSEBUTTONUP:
+                mouse.draging = False
+            elif u.type == 1027:
+                zoom -= posNegZer(u.y)
+                if scale < 300:
+                    scale = 1.1**zoom
+                else:
+                    scale -= u.y/10
+                if scale == 0:
+                    scale = 0.1
+                scale = float("%.3g" % scale)
+                print(scale, zoom)
+                # print(u, dir(u))
 
-    print(f"Took: {time.time() - startTime}")
+        if mouse.draging:
+            mouseMov = pg.mouse.get_rel()
+            position = tuple(position[i]-mouseMov[i] for i in range(2))
+            # print(position, visibleCoords())
 
-    pg.display.update()
-    # print(display.get_buffer().raw)
-    # print(pg.image.frombuffer(display.get_buffer(), size, "RGBA"))
-    # quit()
+        startTime = time.time()
+
+        if oldState != (position, RES, scale, zoom, size):
+            display.fill(BLACK)
+            # drawAreaFuncImg(
+            #     lambda x, y: (x, y),
+            #     lambda x, y: hsvToRgb(mandelbrot0(x, y)*5 % 360, 100, 100)
+            # )
+            drawFunc(
+                lambda x: 1.1**x,
+                lambda x: hsvToRgb(x*10 % 360, 100, 100)
+            )
+            drawAxis()
+
+            print(f"Took: {time.time() - startTime}")
+
+        pg.display.update()
+        oldState = (position, RES, scale, zoom, size)
+        # print(oldState, visibleCoords(), getOfset())
+        # print(display.get_buffer().raw)
+        # print(pg.image.frombuffer(display.get_buffer(), size, "RGBA"))
+        startTime = time.time()
+        print(drawMandelBrot(mandel))
+        print(f"Took {time.time() - startTime}")
+        # quit()
