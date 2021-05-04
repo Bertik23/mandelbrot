@@ -8,6 +8,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 import tqdm
 import os
+from multiprocessing import Pool, Process, Queue
+from brotMulty import getMandelBrotImageMP
 
 # COLORS
 WHITE = (255, 255, 255)
@@ -145,12 +147,12 @@ def drawAreaFuncImg(func, color=WHITE, surface=display):
 
 
 def drawMandelBrot(mandelBrotFunc, surface=display):
-    img = pilImageToSurface(getMandelBrotImage(mandelBrotFunc))
+    img = pilImageToSurface(getMandelBrotImage0(mandelBrotFunc))
 
     surface.blit(img, img.get_rect(center=(250, 250)))
 
 
-def getMandelBrotImage(mandelBrotFunc):
+def getMandelBrotImage0(mandelBrotFunc):
     img = Image.new("RGB", size, "black")
     imgDraw = ImageDraw.Draw(img)
     # seeX, seeY = visibleCoords()
@@ -168,6 +170,11 @@ def getMandelBrotImage(mandelBrotFunc):
                 )
             )
     return img
+
+
+def calcBrot(i, x, y, mandelBrotFunc, queue):
+    n = mandelBrotFunc(x, y)
+    queue.put((i, n))
 
 
 def drawAxis(color=WHITE, surface=display):
@@ -361,6 +368,6 @@ if __name__ == "__main__":
         # print(display.get_buffer().raw)
         # print(pg.image.frombuffer(display.get_buffer(), size, "RGBA"))
         startTime = time.time()
-        print(drawMandelBrot(mandel))
+        print(getMandelBrotImageMP(size))
         print(f"Took {time.time() - startTime}")
         # quit()
