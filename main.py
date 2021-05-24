@@ -6,10 +6,10 @@ import time
 from functools import cache
 import numpy as np
 from PIL import Image, ImageDraw
-import tqdm
 import os
-from multiprocessing import Pool, Process, Queue
-from brotMulty import getMandelBrotImageMP
+from threading import Thread
+from pprint import pprint
+from queue import LifoQueue, Empty
 
 # COLORS
 WHITE = (255, 255, 255)
@@ -17,20 +17,29 @@ BLACK = (0, 0, 0)
 LIME = (0, 255, 0)
 # END COLORS
 
-pg.init()
 
+FPS = 30
 size = (600, 600)
 scale = 1
 zoom = 1
 position = (0, 0)
 RES = 2
+mandelBrotCache = {}
+mandelBrotQueue = LifoQueue()
+imageQueue = LifoQueue()
+positionSnap = 1
+running = True
+lastImageBuffer = (Image.new("RGB", size), (0, 0))
+# imageTimes = [time.time()]
 
-display = pg.display.set_mode(size, pg.RESIZABLE)
+pg.init()
+display = pg.display.set_mode(size, pg.RESIZABLE | pg.HWSURFACE | pg.DOUBLEBUF)
 
 
 class Mouse:
     draging = False
     startPos = (0, 0)
+    lastDragFrame = 0
 
 
 def hsvToRgb(h, s, v):
@@ -54,6 +63,10 @@ def isFunction(f):
     return False
 
 
+def roundToNearest(n, base):
+    return base*round(n/base)
+
+
 def pilImageToSurface(pilImage: Image):
     return pg.image.fromstring(
         pilImage.tobytes(), pilImage.size, pilImage.mode).convert()
@@ -70,8 +83,6 @@ def tamY(y):
 
 
 def sem(xr):
-    # print(xr)
-    # print(xr, size[0]/RES*xr)
     return (xr*(size[0]/RES))/scale + getOfset()[0]
 
 
@@ -84,20 +95,32 @@ def getOfset():
 
 
 def visibleCoords():
-    # return (
-    #     (tam(position[0]), tam(size[0]+position[0])),
-    #     (tamY(position[1]), tamY(size[1]+position[1]))
-    # )
     return (
-        (
-            -(RES/2-(position[0]/(size[0]/RES))) * scale,
-            (RES/2+(position[0]/(size[0]/RES))) * scale
-        ),
-        (
-            -(RES/2-(position[1]/(size[1]/RES))) * scale,
-            (RES/2+(position[1]/(size[1]/RES))) * scale
-        )
+        (tam(0), tam(size[0])),
+        (tamY(0), tamY(size[1]))
     )
+
+
+def tamC(x, pos, scale):
+    x -= getOfsetC(pos)[0]
+    return (x/(size[0]/RES))*scale
+
+
+def tamYC(y, pos, scale):
+    y -= getOfsetC(pos)[1]
+    return (y/(size[1]/RES))*scale
+
+
+def semC(xr, pos, scale):
+    return (xr*(size[0]/RES))/scale + getOfsetC(pos)[0]
+
+
+def semYC(yr, pos, scale):
+    return (yr*(size[1]/RES))/scale + getOfsetC(pos)[1]
+
+
+def getOfsetC(pos):
+    return (size[0]/2-pos[0], size[1]/2-pos[1])
 
 
 def drawFunc(func, color=WHITE, surface=display):
@@ -138,43 +161,47 @@ def drawAreaFuncImg(func, color=WHITE, surface=display):
                 (fx, fy),
                 color(tam(x), tamY(y)) if isFunction(color) else color
             )
-    # print(dir(img))
-    # img = Image.fromarray(img, "RGB")
-    # print(dir(img))
-    img.save("test.png")
-    imgString = img.tobytes()
-    surface.blit(pg.image.frombuffer(imgString, size, "RGB"), (0, 0))
+
+    surface.blit(pilImageToSurface(img), (0, 0))
 
 
-def drawMandelBrot(mandelBrotFunc, surface=display):
-    img = pilImageToSurface(getMandelBrotImage0(mandelBrotFunc))
-
-    surface.blit(img, img.get_rect(center=(250, 250)))
-
-
-def getMandelBrotImage0(mandelBrotFunc):
-    img = Image.new("RGB", size, "black")
-    imgDraw = ImageDraw.Draw(img)
-    # seeX, seeY = visibleCoords()
-    # seeX = (floor(seeX[0]), ceil(seeX[1]))
-    # seeY = (floor(seeY[0]), ceil(seeY[1]))
-    # print(seeX, seeY)
-    for x in range(size[0]):
-        for y in range(size[1]):
-            imgDraw.point(
-                (tam(x), tamY(y)),
-                fill=hsvToRgb(
-                    mandelBrotFunc(tam(x), tamY(y)) * 5 % 360,
+def getMandelBrotImage(mandelBrotFunc, pos, scale):
+    if os.path.exists(
+        "renderedSets/"
+        f"{tamC(0, pos, scale), tamYC(0, pos, scale)}__"
+        f"{tamC(size[0], pos, scale), tamYC(size[1], pos, scale)}.png"
+    ):
+        img = Image.open(
+            "renderedSets/"
+            f"{tamC(0, pos, scale), tamYC(0, pos, scale)}__"
+            f"{tamC(size[0], pos, scale), tamYC(size[1], pos, scale)}.png"
+        )
+    else:
+        img = Image.new("RGB", size, "black")
+        imgDraw = ImageDraw.Draw(img)
+        for x in range(size[0]):
+            for y in range(size[1]):
+                color = hsvToRgb(
+                    mandelBrotFunc(
+                        tamC(x, pos, scale), tamYC(y, pos, scale)
+                    ) * 5 % 360,
                     100,
                     100
                 )
-            )
+                imgDraw.point(
+                    (x, y),
+                    color
+                )
+        img.save(
+            "renderedSets/"
+            f"{tamC(0, pos, scale), tamYC(0, pos, scale)}__"
+            f"{tamC(size[0], pos, scale), tamYC(size[1], pos, scale)}.png"
+        )
     return img
 
 
-def calcBrot(i, x, y, mandelBrotFunc, queue):
-    n = mandelBrotFunc(x, y)
-    queue.put((i, n))
+def drawImage(image, coords=(0, 0), surface=display):
+    surface.blit(pilImageToSurface(image), coords)
 
 
 def drawAxis(color=WHITE, surface=display):
@@ -213,71 +240,9 @@ def drawAxis(color=WHITE, surface=display):
         )
 
 
-def get_iter(c: complex, thresh: int = 4, max_steps: int = 25):
-    # Z_(n) = (Z_(n-1))^2 + c
-    # Z_(0) = c
-    z = c
-    i = 1
-    while i < max_steps and (z*z.conjugate()).real < thresh:
-        z = z*z + c
-        i += 1
-    return i
-
-
-def saveMandelbrot(xy, size, zoom, overwrite=False):
-    x, y = xy
-    if not os.path.exists(
-        f"renderedSets/{x}_{y}_{'x'.join(str(i) for i in size)}_{zoom}_set.png"
-    ) or overwrite:
-        res = 1.1**zoom
-        img = Image.new("RGB", size)
-        imgDraw = ImageDraw.Draw(img)
-        for xr in tqdm.trange(floor(x-size[0]/2), ceil(x+size[0]/2)):
-            for yr in tqdm.trange(floor(y-size[1]/2), floor(y+size[1]/2)):
-                fx = tam(xr, size=size, scale=res)
-                fy = tam(yr, size=size, scale=res)
-                # img[fx][fy] = np.array(
-                #     color(tam(x), tamY(y))).astype(np.uint8
-                # ) if isFunction(color) else color
-                # print(xr, yr, xr-x, yr-y, fx, fy)
-                imgDraw.point(
-                    (xr-x+size[0]/2, yr-y+size[1]/2),
-                    hsvToRgb(mandelbrot0(fx, fy)*5 % 360, 100, 100)
-                )
-        # print(dir(img))
-        # img = Image.fromarray(img, "RGB")
-        # print(dir(img))
-        img.save(
-            "renderedSets/"
-            f"{x}_{y}_{'x'.join(str(i) for i in size)}_{zoom}_set.png"
-        )
-        print(res)
-        print(
-            tam(floor(x-size[0]/2), size=size, scale=res),
-            tam(ceil(x+size[0]/2), size=size, scale=res)
-        )
-        print(
-            tam(floor(y-size[1]/2), size=size, scale=res),
-            tam(ceil(y+size[1]/2), size=size, scale=res)
-        )
-        # imgString = img.tobytes()
-
-
 @cache
 @njit
-def mandelbrot0(x, y):
-    c0 = complex(x, y)
-    c = 0
-    for i in range(1, 1000):
-        if abs(c) > 2:
-            return i
-        c = c * c + c0
-    return 0
-
-
-@cache
-@njit
-def mandel(c_r, c_i):
+def mandelParts(c_r, c_i):
     z_r = 0
     z_i = 0
     z_r_squared = 0
@@ -293,14 +258,20 @@ def mandel(c_r, c_i):
     return 1000
 
 
+def calculateMandel(mandelBrotFunc):
+    global lastImageBuffer
+    while running:
+        pos, scale = mandelBrotQueue.get()
+        imageQueue.put((
+            getMandelBrotImage(mandelBrotFunc, pos, scale),
+            (tamC(0, pos, scale), tamYC(0, pos, scale))
+        ))
+        mandelBrotQueue.task_done()
+
+
 @cache
 @njit
-def myFractal(a, b):
-    return a+b
-
-
-@njit
-def mandelbrot1(x, y):
+def mandelComplex(x, y):
     z = complex(x, y)
     c = z
     for n in range(1000):
@@ -310,10 +281,21 @@ def mandelbrot1(x, y):
     return 0
 
 
-if __name__ == "__main__":
-    oldState = None  # (position, RES, scale, zoom, size)
+timeDelta = 0
+frame = 0
 
-    running = True
+
+def main():
+    global position, scale, RES, zoom, size, display, running, timeDelta
+    global frame, lastImageBuffer
+    calcThread = Thread(
+        target=calculateMandel,
+        args=(mandelComplex,),
+        name="BrotCalculation"
+    )
+    calcThread.start()
+
+    oldState = None  # (position, RES, scale, zoom, size)
 
     mouse = Mouse()
     while running:
@@ -324,11 +306,11 @@ if __name__ == "__main__":
                 size = (u.w, u.h)
                 display = pg.display.set_mode(size, pg.RESIZABLE)
             elif u.type == pg.MOUSEBUTTONDOWN:
-                # mouse.startPos = pg.mouse.get_pos()
                 pg.mouse.get_rel()
                 mouse.draging = True
             elif u.type == pg.MOUSEBUTTONUP:
                 mouse.draging = False
+                mouse.lastDragFrame = frame
             elif u.type == 1027:
                 zoom -= posNegZer(u.y)
                 if scale < 300:
@@ -343,24 +325,52 @@ if __name__ == "__main__":
 
         if mouse.draging:
             mouseMov = pg.mouse.get_rel()
-            position = tuple(position[i]-mouseMov[i] for i in range(2))
-            # print(position, visibleCoords())
+            position = tuple(
+                position[i] - roundToNearest(
+                    mouseMov[i],
+                    positionSnap
+                ) for i in range(2)
+            )
 
         startTime = time.time()
 
-        if oldState != (position, RES, scale, zoom, size):
+        try:
+            lastImageBuffer = imageQueue.get_nowait()
+            rerender = True
+        except Empty:
+            rerender = False
+
+        if (
+            oldState != (position, RES, scale, zoom, size)
+            or mouse.lastDragFrame >= frame-2 or rerender
+        ):
             display.fill(BLACK)
-            # drawAreaFuncImg(
-            #     lambda x, y: (x, y),
-            #     lambda x, y: hsvToRgb(mandelbrot0(x, y)*5 % 360, 100, 100)
-            # )
+            # print(mouse.draging)
+            if not mouse.draging or mouse.lastDragFrame >= frame-2:
+                # drawAreaFuncImg(
+                #     lambda x, y: (x, y),
+                #     lambda x, y: hsvToRgb(
+                #         mandelbrot0(x, y)*5 % 360,
+                #         100,
+                #         100
+                #     )
+                # )
+                if mandelBrotQueue.empty():
+                    mandelBrotQueue.put((position, scale))
+                # drawMandel()
+                pass
+            # print(lastImageBuffer[0])
+            drawImage(
+                lastImageBuffer[0],
+                (sem(lastImageBuffer[1][0]), semY(lastImageBuffer[1][1]))
+            )
             drawFunc(
                 lambda x: 1.1**x,
                 lambda x: hsvToRgb(x*10 % 360, 100, 100)
             )
             drawAxis()
 
-            print(f"Took: {time.time() - startTime}")
+            # print(f"Took: {time.time() - startTime}")
 
         pg.display.update()
         oldState = (position, RES, scale, zoom, size)
@@ -368,6 +378,17 @@ if __name__ == "__main__":
         # print(display.get_buffer().raw)
         # print(pg.image.frombuffer(display.get_buffer(), size, "RGBA"))
         startTime = time.time()
-        print(getMandelBrotImageMP(size))
-        print(f"Took {time.time() - startTime}")
-        # quit()
+        # print(getMandelBrotImageMP(size))
+        timeDelta = time.time() - startTime
+        # print(f"Took {timeDelta}")
+
+        frame += 1
+
+        # await asyncio.sleep(1/FPS - timeDelta)
+
+    calcThread.join()
+
+
+if __name__ == "__main__":
+    main()
+    pass
