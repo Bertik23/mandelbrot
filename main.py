@@ -35,11 +35,34 @@ lastImageBuffer = (Image.new("RGB", size), (0, 0))
 pg.init()
 display = pg.display.set_mode(size, pg.RESIZABLE | pg.HWSURFACE | pg.DOUBLEBUF)
 
+if not os.path.exists("renderedSets"):
+    os.mkdir("renderedSets")
+
 
 class Mouse:
     draging = False
     startPos = (0, 0)
     lastDragFrame = 0
+
+
+class ImageBuffer:
+    def __init__(self):
+        self.images: dict[int, Image.Image] = {}
+        self.positions: dict[int, tuple[tuple[int, int], tuple[int, int]]] = {}
+
+    def __getitem__(self, i: int):
+        return self.images[i], self.positions[i]
+
+    def __setitem__(
+        self,
+        key: int,
+        value: tuple[Image.Image, tuple[tuple[int, int], tuple[int, int]]]
+    ):
+        self.images[key] = value[0]
+        self.positions[key] = value[1]
+
+    def addToZoom(self, zoom: int, image: Image.Image, pos: tuple(int, int)):
+        newSize = image.size
 
 
 def hsvToRgb(h, s, v):
@@ -91,7 +114,10 @@ def semY(yr):
 
 
 def getOfset():
-    return (size[0]/2-position[0], size[1]/2-position[1])
+    return (
+        size[0]/2-position[0],
+        size[1]/2-position[1]
+    )
 
 
 def visibleCoords():
@@ -139,13 +165,7 @@ def drawAreaFunc(func, color=WHITE, surface=display):
     for x in range(size[0]):
         for y in range(size[1]):
             c = color(tam(x), tamY(y)) if isFunction(color) else color
-            # print(c)
-            # surface.set_at(
-            #     func(int(tam(x)), int(tamY(y))),
-            #     c
-            # )
             pg.draw.line(surface, c, func(x, y), func(x, y))
-            # print(surface.get_at(func(x, y)))
 
 
 def drawAreaFuncImg(func, color=WHITE, surface=display):
@@ -154,9 +174,6 @@ def drawAreaFuncImg(func, color=WHITE, surface=display):
     for x in range(size[0]):
         for y in range(size[1]):
             fx, fy = func(x, y)
-            # img[fx][fy] = np.array(
-            #     color(tam(x), tamY(y))).astype(np.uint8
-            # ) if isFunction(color) else color
             imgDraw.point(
                 (fx, fy),
                 color(tam(x), tamY(y)) if isFunction(color) else color
@@ -295,7 +312,7 @@ def main():
     )
     calcThread.start()
 
-    oldState = None  # (position, RES, scale, zoom, size)
+    oldState = None
 
     mouse = Mouse()
     while running:
@@ -312,6 +329,10 @@ def main():
                 mouse.draging = False
                 mouse.lastDragFrame = frame
             elif u.type == 1027:
+                oldPos = (
+                    tam(position[0] + getOfset()[0]),
+                    tamY(position[1] + getOfset()[1])
+                )
                 zoom -= posNegZer(u.y)
                 if scale < 300:
                     scale = 1.1**zoom
@@ -320,16 +341,22 @@ def main():
                 if scale == 0:
                     scale = 0.1
                 scale = float("%.3g" % scale)
-                print(scale, zoom)
-                # print(u, dir(u))
+                position = (
+                    sem(oldPos[0]) - getOfset()[0],
+                    semY(oldPos[1]) - getOfset()[1]
+                )
 
         if mouse.draging:
             mouseMov = pg.mouse.get_rel()
-            position = tuple(
-                position[i] - roundToNearest(
-                    mouseMov[i],
+            position = (
+                position[0] - roundToNearest(
+                    mouseMov[0],
                     positionSnap
-                ) for i in range(2)
+                ),
+                position[1] - roundToNearest(
+                    mouseMov[1],
+                    positionSnap
+                )
             )
 
         startTime = time.time()
@@ -345,21 +372,12 @@ def main():
             or mouse.lastDragFrame >= frame-2 or rerender
         ):
             display.fill(BLACK)
-            # print(mouse.draging)
             if not mouse.draging or mouse.lastDragFrame >= frame-2:
-                # drawAreaFuncImg(
-                #     lambda x, y: (x, y),
-                #     lambda x, y: hsvToRgb(
-                #         mandelbrot0(x, y)*5 % 360,
-                #         100,
-                #         100
-                #     )
-                # )
                 if mandelBrotQueue.empty():
-                    mandelBrotQueue.put((position, scale))
-                # drawMandel()
+                    # mandelBrotQueue.put((position, scale))
+                    pass
                 pass
-            # print(lastImageBuffer[0])
+
             drawImage(
                 lastImageBuffer[0],
                 (sem(lastImageBuffer[1][0]), semY(lastImageBuffer[1][1]))
@@ -383,8 +401,6 @@ def main():
         # print(f"Took {timeDelta}")
 
         frame += 1
-
-        # await asyncio.sleep(1/FPS - timeDelta)
 
     calcThread.join()
 
