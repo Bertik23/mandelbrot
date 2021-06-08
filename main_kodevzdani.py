@@ -1,15 +1,14 @@
-import pygame as pg
-from math import sin, cos, floor, ceil, log
-from colorsys import hsv_to_rgb
-from numba import njit
-import time
-from functools import cache
-import numpy as np
-from PIL import Image, ImageDraw
 import os
+import time
+from colorsys import hsv_to_rgb
+from functools import cache
+from math import ceil, floor
+from queue import Empty, LifoQueue
 from threading import Thread
-from pprint import pprint
-from queue import LifoQueue, Empty
+
+import pygame as pg
+from numba import njit
+from PIL import Image, ImageDraw
 
 # COLORS
 WHITE = (255, 255, 255)
@@ -28,15 +27,14 @@ RES = 2
 mandelBrotCache = {}
 mandelBrotQueue = LifoQueue()
 imageQueue = LifoQueue()
-bufferQueueIn = LifoQueue()
-bufferQueueOut = LifoQueue()
 positionSnap = 1
 running = True
 lastImageBuffer = (Image.new("RGB", size), (0, 0))
-# imageTimes = [time.time()]
+
 
 pg.init()
 display = pg.display.set_mode(size, pg.HWSURFACE | pg.DOUBLEBUF)
+pg.display.set_caption("Mandelbrot")
 
 if not os.path.exists("renderedSets"):
     os.mkdir("renderedSets")
@@ -46,140 +44,6 @@ class Mouse:
     draging = False
     startPos = (0, 0)
     lastDragFrame = 0
-
-
-class ImageBuffer:
-    def __init__(self):
-        self.images: dict[int, Image.Image] = {}
-        self.positions: dict[int, tuple[tuple[int, int], tuple[int, int]]] = {}
-
-    def __getitem__(self, i: int):
-        return (
-            self.images.get(i, Image.new("RGB", (0, 0))),
-            self.positions.get(i, ((0, 0), (0, 0)))
-        )
-
-    def __setitem__(
-        self,
-        key: int,
-        value: tuple[Image.Image, tuple[tuple[int, int], tuple[int, int]]]
-    ):
-        self.images[key] = value[0]
-        self.positions[key] = value[1]
-
-    def addToZoom(
-        self,
-        zoom: int,
-        image: Image.Image,
-        pos: tuple[tuple[int, int], tuple[int, int]]
-    ):
-        newPos = [list(i) for i in self.positions.get(zoom, ((0, 0), (0, 0)))]
-        if pos[0][0] < self.positions.get(zoom, ((0, 0), (0, 0)))[0][0]:
-            newPos[0][0] = pos[0][0]
-        if pos[0][1] < self.positions.get(zoom, ((0, 0), (0, 0)))[0][1]:
-            newPos[0][1] = pos[0][1]
-        if pos[1][0] > self.positions.get(zoom, ((0, 0), (0, 0)))[1][0]:
-            newPos[1][0] = pos[1][0]
-        if pos[1][1] > self.positions.get(zoom, ((0, 0), (0, 0)))[1][1]:
-            newPos[1][1] = pos[1][1]
-        newSize = (
-            int(ceil(semC(
-                abs(newPos[0][0] - newPos[1][0]),
-                (0, 0),
-                scaleZoomKoeficient**zoom
-            ))),
-            int(ceil(semYC(
-                abs(newPos[0][1] - newPos[1][1]),
-                (0, 0),
-                scaleZoomKoeficient**zoom
-            )))
-        )
-        newImage = Image.new("RGB", newSize)
-        positions = (
-            self.positions.get(zoom, ((0, 0), (0, 0)))[0]
-            + self.positions.get(zoom, ((0, 0), (0, 0)))[1]
-        )
-        print(newSize, self.images.get(zoom, Image.new("RGB", (0, 0))))
-        print(tuple(map(int, (
-                semC(
-                    positions[0],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semYC(
-                    positions[1],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semC(
-                    positions[2],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semYC(
-                    positions[3],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                )))
-            ))
-        newImage.paste(
-            self.images.get(zoom, Image.new("RGB", (0, 0))),
-            box=tuple(map(int, (
-                semC(
-                    positions[0],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semYC(
-                    positions[1],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semC(
-                    positions[2],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semYC(
-                    positions[3],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                )))
-            )
-        )
-        newImage.paste(
-            image,
-            box=tuple(map(int, (
-                semC(
-                    pos[0][0],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semYC(
-                    pos[0][1],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semC(
-                    pos[1][0],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                ),
-                semYC(
-                    pos[1][1],
-                    (0, 0),
-                    scaleZoomKoeficient**zoom
-                )))
-            )
-        )
-        self[zoom] = newImage, newPos
-
-    def draw(self, zoom, surface=display):
-        pos = self.positions.get(zoom, ((0, 0), (0, 0)))
-        drawImage(
-            self.images.get(zoom, Image.new("RGB", (1, 1))),
-            (sem(pos[0][0]), semY(pos[0][1]))
-        )
 
 
 def hsvToRgb(h, s, v):
@@ -403,25 +267,6 @@ def calculateMandel(mandelBrotFunc):
         mandelBrotQueue.task_done()
 
 
-def bufferCalculation(mandelBrotFunc):
-    while running:
-        pos, zoom = bufferQueueIn.get()
-        bufferQueueOut.put((
-            zoom,
-            getMandelBrotImage(mandelBrotFunc, pos, scaleZoomKoeficient**zoom),
-            (
-                (
-                    tamC(0, pos, scaleZoomKoeficient**zoom),
-                    tamYC(0, pos, scaleZoomKoeficient**zoom)
-                ),
-                (
-                    tamC(size[0], pos, scaleZoomKoeficient**zoom),
-                    tamYC(size[1], pos, scaleZoomKoeficient**zoom)
-                )
-            )
-        ))
-
-
 @cache
 @njit
 def mandelComplex(x, y):
@@ -442,7 +287,7 @@ def main():
     global position, scale, RES, zoom, size, display, running, timeDelta
     global frame, lastImageBuffer
     calcThread = Thread(
-        target=bufferCalculation,  # calculateMandel,
+        target=calculateMandel,
         args=(mandelComplex,),
         name="BrotCalculation"
     )
@@ -451,7 +296,7 @@ def main():
     oldState = None
 
     mouse = Mouse()
-    imageBuffer = ImageBuffer()
+
     while running:
         for u in pg.event.get():
             if u.type == pg.QUIT:
@@ -504,10 +349,6 @@ def main():
         except Empty:
             rerender = False
 
-        if not bufferQueueOut.empty():
-            imageBuffer.addToZoom(*bufferQueueOut.get())
-            rerender = True
-
         if (
             oldState != (position, RES, scale, zoom, size)
             or mouse.lastDragFrame >= frame-2 or rerender
@@ -515,10 +356,7 @@ def main():
             display.fill(BLACK)
             if not mouse.draging or mouse.lastDragFrame >= frame-2:
                 if mandelBrotQueue.empty():
-                    # mandelBrotQueue.put((position, scale))
-                    bufferQueueIn.put((position, zoom))
-                    pass
-                pass
+                    mandelBrotQueue.put((position, scale))
 
             drawImage(
                 lastImageBuffer[0],
@@ -530,19 +368,10 @@ def main():
             )
             drawAxis()
 
-            imageBuffer.draw(zoom, display)
-
-            # print(f"Took: {time.time() - startTime}")
-
         pg.display.update()
         oldState = (position, RES, scale, zoom, size)
-        # print(oldState, visibleCoords(), getOfset())
-        # print(display.get_buffer().raw)
-        # print(pg.image.frombuffer(display.get_buffer(), size, "RGBA"))
         startTime = time.time()
-        # print(getMandelBrotImageMP(size))
         timeDelta = time.time() - startTime
-        # print(f"Took {timeDelta}")
 
         frame += 1
 
@@ -551,4 +380,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    pass
